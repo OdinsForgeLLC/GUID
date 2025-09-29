@@ -2,98 +2,75 @@ package GUID
 
 
 import "core:fmt"
-import "core:os"
-import win32 "core:sys/windows"
+import "core:math"
 import "core:strings"
+import "core:sys/windows"
+import utf16 "core:unicode/utf16"
+import utf8 "core:unicode/utf8"
+
 
 foreign import Ole32 "system:Ole32.lib"
 
-foreign Ole32 {
-	CoCreateGuid :: proc(pguid: ^GUID) -> win32.HRESULT ---
+foreign Ole32
+{
+	CoCreateGuid :: proc(pguid: ^GUID) -> windows.HRESULT ---
+	StringFromGUID2 :: proc(rclsid: windows.REFCLSID, lplpsz: windows.LPOLESTR, cchMax: windows.INT) -> windows.INT --- // https://docs.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-stringfromguid2
 }
 
-// We dont really need this Context or what it does as Windows the API makes sure it's unique but you never know.
-GUID_Context :: struct {
-    GUIDRegistry: [dynamic]GUID,
-}
 
 GUID :: struct {
-    Data1: u32,
-    Data2: u16,
-    Data3: u16,
-    Data4: [8]u8,
-	Inuse: b32,
+	Data1, Data2, Data3: u32,
+	Data4:               [8]u8,
 }
 
-gc : GUID_Context = GUID_Context{
-}
 
 New_GUID :: proc() -> GUID {
 	guid := GUID{}
 	hr := CoCreateGuid(&guid)
-	if hr != 0 {
-		return GUID{}
-	}
-	guid.Inuse = true
-	append(&gc.GUIDRegistry, guid)
 	return guid
 }
 
-GUID_To_String :: proc(guid: GUID) -> string {
-    s := fmt.tprintf("%08x-%04x-%04x-%02x%02x-%02x%02x-%02x%02x-%02x%02x",
-        int(guid.Data1), int(guid.Data2), int(guid.Data3),
-        int(guid.Data4[0]), int(guid.Data4[1]), int(guid.Data4[2]), int(guid.Data4[3]),
-        int(guid.Data4[4]), int(guid.Data4[5]), int(guid.Data4[6]), int(guid.Data4[7]))
-    return strings.concatenate({"", s, ""})
+GUID_To_String_Alloc :: proc(guid: ^GUID) -> string {
+	buffer: [39]u16
+	runes: [39]rune
+	length := GUID_To_String(guid, buffer[:])
+	if length > 0 {
+		rune_count := utf16.decode(runes[:], buffer[:length])
+		if rune_count > 0 && runes[rune_count - 1] == 0 {
+			rune_count -= 1
+		}
+		str := utf8.runes_to_string(runes[:rune_count])
+		return Remove_Brackets(str)
+	}
+	return ""
 }
 
-GUID_Is_Registered :: proc(guid: GUID) -> bool {
-    for g in gc.GUIDRegistry {
-        if GUID_Equal(g, guid) {
-            return true
-        }
-    }
-    return false
+GUID_To_String :: proc(guid: ^GUID, buffer: []u16) -> (length: int) {
+	return int(
+		windows.StringFromGUID2(
+			windows.REFCLSID(guid),
+			windows.LPOLESTR(raw_data(buffer)),
+			windows.INT(len(buffer)),
+		),
+	)
 }
 
-GUID_Register :: proc(guid: GUID) {
-    if !GUID_Is_Registered(guid) {
-        append(&gc.GUIDRegistry, guid)
-    }
+Remove_From_Start :: proc(s: string, count: int) -> string {
+	return s[count:]
 }
 
-
-GUID_Unregister :: proc(guid: GUID) {
-    for i in 0..<len(gc.GUIDRegistry) {
-        if GUID_Equal(gc.GUIDRegistry[i], guid) {
-            unordered_remove(&gc.GUIDRegistry, i)
-            break
-        }
-    }
+Remove_From_End :: proc(s: string, count: int) -> string {
+	return s[:len(s) - count]
 }
 
-GUID_Equal :: proc(a, b: GUID) -> bool {
-    return a.Data1 == b.Data1 && a.Data2 == b.Data2 && a.Data3 == b.Data3 && a.Data4 == b.Data4
+Remove_Brackets :: proc(s: string) -> string {
+	return Remove_From_Start(Remove_From_End(s, 1), 1)
 }
 
-GUID_Not_Equal :: proc(a, b: GUID) -> bool {
-    return !GUID_Equal(a, b)
+GUID_Equal :: proc(a, b: ^GUID) -> bool {
+	return a.Data1 == b.Data1 && a.Data2 == b.Data2 && a.Data3 == b.Data3 && a.Data4 == b.Data4
 }
 
-
-GUID_Get_Registry :: proc() -> []GUID {
-    return gc.GUIDRegistry[:]
-}
-
-GUID_Get_Registry_Length :: proc() -> int {
-    return int(len(gc.GUIDRegistry))
-}
-
-GUID_Get_Registry_Index :: proc(guid: GUID) -> int {
-    for i in 0..<len(gc.GUIDRegistry) {
-        if GUID_Equal(gc.GUIDRegistry[i], guid) {
-            return i
-        }
-    }
-    return -1
+GUID_Not_Equal :: proc(a, b: ^GUID) -> bool {
+	return !GUID_Equal(a, b)
 }
